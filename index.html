@@ -1,0 +1,795 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <title>Living Album Art — Nebula v3</title>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700&display=swap" rel="stylesheet"/>
+  <style>
+    *{margin:0;padding:0;box-sizing:border-box;}
+    :root{--accent:#8b5cf6;--accent2:#06b6d4;}
+    body{background:#000;overflow:hidden;width:100vw;height:100vh;font-family:'Inter',sans-serif;}
+
+    /* Album art blurred bg */
+    #art-bg{
+      position:absolute;inset:-50px;z-index:0;
+      background-size:cover;background-position:center;
+      filter:blur(80px) brightness(0.18) saturate(2.2);
+      transform:scale(1.25);
+      transition:background-image 2.5s ease;
+    }
+    #art-bg.loaded{filter:blur(80px) brightness(0.22) saturate(2.2);}
+
+    canvas{position:absolute;top:0;left:0;display:block;}
+    #cBg{z-index:1;}
+    #cMain{z-index:2;}
+
+    /* Now Playing card */
+    #now-playing{
+      position:absolute;z-index:20;bottom:30px;left:30px;
+      display:flex;align-items:center;gap:14px;
+      background:rgba(8,8,18,0.58);
+      backdrop-filter:blur(26px) saturate(1.6);
+      border:1px solid rgba(255,255,255,0.08);
+      border-radius:18px;padding:12px 18px 12px 12px;
+      opacity:0;transform:translateY(28px) scale(0.97);
+      transition:opacity .9s ease,transform .9s cubic-bezier(.34,1.56,.64,1);
+      max-width:300px;min-width:220px;
+      box-shadow:0 8px 40px rgba(0,0,0,.6),inset 0 1px 0 rgba(255,255,255,.05);
+    }
+    #now-playing.visible{opacity:1;transform:translateY(0) scale(1);}
+    #art-thumb{
+      width:54px;height:54px;border-radius:10px;object-fit:cover;flex-shrink:0;
+      background:#1a1a2e;border:1.5px solid rgba(255,255,255,0.08);
+      box-shadow:0 4px 24px rgba(0,0,0,.7);transition:all 1s ease;
+    }
+    #track-info{flex:1;min-width:0;}
+    #track-title{font-size:13.5px;font-weight:600;color:#fff;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;text-shadow:0 0 24px var(--accent);transition:text-shadow 1s ease;}
+    #track-artist{font-size:11px;font-weight:300;color:rgba(255,255,255,.5);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:3px;}
+    #track-album{font-size:10px;color:rgba(255,255,255,.28);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:2px;font-style:italic;}
+    #music-bars{display:flex;align-items:flex-end;gap:2.5px;height:14px;margin-top:7px;}
+    .mbar{width:3px;background:var(--accent);border-radius:2px;animation:mb .8s ease-in-out infinite;opacity:.75;}
+    .mbar:nth-child(1){animation-delay:0s;height:35%}.mbar:nth-child(2){animation-delay:.15s;height:65%}
+    .mbar:nth-child(3){animation-delay:.3s;height:100%}.mbar:nth-child(4){animation-delay:.2s;height:55%}
+    .mbar:nth-child(5){animation-delay:.08s;height:28%}
+    @keyframes mb{0%,100%{transform:scaleY(1)}50%{transform:scaleY(.2)}}
+
+    /* HUD */
+    #hud{position:absolute;z-index:20;bottom:20px;right:28px;display:flex;align-items:center;gap:8px;opacity:.3;pointer-events:none;}
+    .hdot{width:5px;height:5px;border-radius:50%;background:#fff;box-shadow:0 0 5px #fff;animation:pd 1.5s infinite;}
+    .hlbl{font-size:9px;letter-spacing:3.5px;color:rgba(255,255,255,.4);text-transform:uppercase;}
+    @keyframes pd{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.2;transform:scale(2)}}
+
+    /* Flash overlay */
+    #flash{position:absolute;inset:0;z-index:30;background:radial-gradient(ellipse,rgba(255,255,255,.12) 0%,transparent 70%);opacity:0;pointer-events:none;transition:opacity .1s;}
+  </style>
+</head>
+<body>
+<div id="art-bg"></div>
+<canvas id="cBg"></canvas>
+<canvas id="cMain"></canvas>
+<div id="flash"></div>
+
+<div id="now-playing">
+  <img id="art-thumb" src="" alt=""/>
+  <div id="track-info">
+    <div id="track-title">Waiting for track…</div>
+    <div id="track-artist"></div>
+    <div id="track-album"></div>
+    <div id="music-bars">
+      <div class="mbar"></div><div class="mbar"></div><div class="mbar"></div>
+      <div class="mbar"></div><div class="mbar"></div>
+    </div>
+  </div>
+</div>
+<div id="hud"><div class="hdot"></div><span class="hlbl">Nebula v3</span></div>
+
+<script>
+// ══════════════════════════════════════════════════
+//  CANVAS SETUP
+// ══════════════════════════════════════════════════
+const bgCvs=document.getElementById('cBg'), bx=bgCvs.getContext('2d');
+const cvs=document.getElementById('cMain'),   cx=cvs.getContext('2d');
+let W,H,CX,CY,R;
+function resize(){
+  W=cvs.width=bgCvs.width=window.innerWidth;
+  H=cvs.height=bgCvs.height=window.innerHeight;
+  CX=W/2;CY=H/2;R=Math.min(W,H)*.5;
+}
+resize();window.addEventListener('resize',resize);
+
+// ══════════════════════════════════════════════════
+//  AUDIO
+// ══════════════════════════════════════════════════
+let raw=new Float32Array(128).fill(0);
+let demoMode=true, demoT=0;
+function livelyAudioListener(a){demoMode=false;raw=a;}
+function getDemoAudio(){
+  const a=new Float32Array(128);
+  for(let i=0;i<128;i++){
+    const f=i/128;
+    a[i]=Math.pow(Math.max(0,Math.sin(demoT*2.1+f*2.8)*.5+.5),1.5)*.78;
+    a[i]+=Math.sin(demoT*4.5+i*.28)*.09*(1-f);
+    a[i]+=Math.random()*.055;
+    a[i]=Math.min(1,Math.max(0,a[i]));
+  }
+  return a;
+}
+
+// ══════════════════════════════════════════════════
+//  MOUSE PARALLAX
+// ══════════════════════════════════════════════════
+let mRawX=.5,mRawY=.5;  // normalized 0-1
+let mX=0,mY=0;           // smoothed, centered -1 to 1
+let mXvel=0,mYvel=0;     // momentum
+
+function livelyMouseMoveListener(x,y){
+  mRawX=x/W; mRawY=y/H;
+}
+
+// Parallax strength per layer
+const P_STARS  =18;  // deepest
+const P_NEBULA =38;
+const P_AURORA =20;
+const P_RINGS  =9;
+const P_CORE   =26;  // foreground, moves most
+
+// ══════════════════════════════════════════════════
+//  NOW PLAYING
+// ══════════════════════════════════════════════════
+let currentTrack=null, trackFlash=0;
+let targetHue=220,artHue=220;
+let loadedAlbumImg=null;
+
+// Generate 3D tech demo artwork for fallback/demo mode
+function createDemoAlbumArt(){
+  const c=document.createElement('canvas'); c.width=512; c.height=512;
+  const x=c.getContext('2d');
+  const g=x.createRadialGradient(256,256,10,256,256,256);
+  g.addColorStop(0,'#4c1d95'); g.addColorStop(0.5,'#0284c7'); g.addColorStop(1,'#09090b');
+  x.fillStyle=g; x.fillRect(0,0,512,512);
+  x.strokeStyle='rgba(255,255,255,0.2)'; x.lineWidth=2;
+  for(let i=-256;i<=768;i+=40){
+    x.beginPath(); x.moveTo(i,0); x.lineTo(i+256,512); x.stroke();
+    x.beginPath(); x.moveTo(0,i); x.lineTo(512,i-256); x.stroke();
+  }
+  for(let r=60;r<220;r+=18){
+    x.beginPath(); x.arc(256,256,r,0,Math.PI*2);
+    x.strokeStyle='rgba(255,255,255,0.14)'; x.lineWidth=1.5; x.stroke();
+  }
+  x.fillStyle='#0f172a'; x.beginPath(); x.arc(256,256,70,0,Math.PI*2); x.fill();
+  x.strokeStyle='#38bdf8'; x.lineWidth=3; x.stroke();
+  x.fillStyle='#38bdf8'; x.font='bold 22px Inter, sans-serif'; x.textAlign='center';
+  x.fillText('NEBULA',256,263);
+  const img=new Image(); img.src=c.toDataURL();
+  return img;
+}
+let demoAlbumArt = createDemoAlbumArt();
+
+function livelyCurrentTrack(jsonStr){
+  let track;
+  try{track=JSON.parse(jsonStr);}catch(e){return;}
+  if(!track){
+    document.getElementById('now-playing').classList.remove('visible');
+    currentTrack=null;loadedAlbumImg=null;return;
+  }
+  const title  =track.Title   ||track.title   ||'—';
+  const artist =track.Artist  ||track.artist  ||'—';
+  const album  =track.Album   ||track.album   ||'';
+  const thumbB64=track.Thumbnail||track.thumbnail||null;
+  if(currentTrack&&currentTrack._t===title&&currentTrack._a===artist)return;
+  currentTrack={_t:title,_a:artist};
+  trackFlash=1;
+  document.getElementById('track-title').textContent=title;
+  document.getElementById('track-artist').textContent=artist;
+  document.getElementById('track-album').textContent=album;
+  document.getElementById('now-playing').classList.add('visible');
+  if(thumbB64){
+    const src=thumbB64.startsWith('data:')?thumbB64:'data:image/png;base64,'+thumbB64;
+    document.getElementById('art-thumb').src=src;
+    const img=new Image();
+    img.onload=()=>{
+      loadedAlbumImg=img;
+      extractColor(img);
+      const ab=document.getElementById('art-bg');
+      ab.style.backgroundImage=`url('${src}')`;ab.classList.add('loaded');
+    };
+    img.src=src;
+  }
+}
+
+setTimeout(()=>{
+  if(demoMode){
+    document.getElementById('track-title').textContent='Demo — Play in Lively';
+    document.getElementById('track-artist').textContent='Lively Audio API';
+    document.getElementById('now-playing').classList.add('visible');
+  }
+},900);
+
+function extractColor(img){
+  const c=document.createElement('canvas');c.width=32;c.height=32;
+  const x=c.getContext('2d');x.drawImage(img,0,0,32,32);
+  const d=x.getImageData(0,0,32,32).data;
+  let bestSat=0,bestHue=220;
+  for(let i=0;i<d.length;i+=4){
+    const [h,s,l]=rgbToHsl(d[i]/255,d[i+1]/255,d[i+2]/255);
+    if(s>.22&&l>.08&&l<.92&&s>bestSat){bestSat=s;bestHue=h*360;}
+  }
+  targetHue=bestHue;
+  artHue=hue=hueTarget=targetHue;
+  document.documentElement.style.setProperty('--accent',`hsl(${targetHue},90%,65%)`);
+  document.documentElement.style.setProperty('--accent2',`hsl(${(targetHue+140)%360},85%,60%)`);
+  document.getElementById('track-title').style.textShadow=`0 0 28px hsl(${targetHue},90%,65%)`;
+}
+function rgbToHsl(r,g,b){
+  const mx=Math.max(r,g,b),mn=Math.min(r,g,b);
+  let h=0,s=0,l=(mx+mn)/2;
+  if(mx!==mn){const d=mx-mn;s=l>.5?d/(2-mx-mn):d/(mx+mn);
+    if(mx===r)h=(g-b)/d+(g<b?6:0);else if(mx===g)h=(b-r)/d+2;else h=(r-g)/d+4;h/=6;}
+  return[h,s,l];
+}
+
+// ══════════════════════════════════════════════════
+//  STATE
+// ══════════════════════════════════════════════════
+const N=128;
+const sm=new Float32Array(N),sm2=new Float32Array(N);
+let hue=220,hueTarget=220;
+let bass=0,mid=0,treble=0,vocal=0,vol=0;
+let bS=0,mS=0,tS=0,vocalS=0,volS=0;
+let beat=0,lastBass=0,lastBeatT=0;
+let shockR=0,shockA=0;
+let gT=0,nebulaT=0;
+const BOOST=2.8;
+
+function avg(a,lo,hi){let s=0;for(let i=lo;i<hi;i++)s+=a[i];return s/(hi-lo);}
+function lerp(a,b,t){return a+(b-a)*t;}
+function hsl(h,s,l,a=1){return`hsla(${((h%360)+360)%360},${s}%,${l}%,${a})`;}
+
+// ══════════════════════════════════════════════════
+//  PARTICLES
+// ══════════════════════════════════════════════════
+const PMAX=700,particles=[];
+class Pt{
+  constructor(x,y,vx,vy,r,h,life,decay){
+    this.x=x;this.y=y;this.vx=vx;this.vy=vy;this.r=r;this.h=h;this.life=life;this.decay=decay;this.drag=.92+Math.random()*.05;
+  }
+  tick(){this.x+=this.vx;this.y+=this.vy;this.vx*=this.drag;this.vy*=this.drag;this.life-=this.decay;this.r*=.97;}
+  draw(){
+    if(this.life<=0)return;
+    cx.save();cx.globalAlpha=Math.max(0,this.life)*.9;
+    cx.beginPath();cx.arc(this.x,this.y,Math.max(.4,this.r),0,Math.PI*2);
+    const g=cx.createRadialGradient(this.x,this.y,0,this.x,this.y,this.r*2.5);
+    g.addColorStop(0,hsl(this.h,100,95));g.addColorStop(1,hsl(this.h,80,40,0));
+    cx.fillStyle=g;cx.shadowColor=hsl(this.h,100,70);cx.shadowBlur=this.r*3;cx.fill();cx.restore();
+  }
+}
+function burst(x,y,n,sp,h,r=3,life=1,decay=.018){
+  for(let i=0;i<n;i++){
+    if(particles.length>=PMAX)break;
+    const a=Math.random()*Math.PI*2,s=(.4+Math.random())*sp;
+    particles.push(new Pt(x,y,Math.cos(a)*s,Math.sin(a)*s,r+Math.random()*r,h+Math.random()*50-25,life,decay+Math.random()*.012));
+  }
+}
+
+// ══════════════════════════════════════════════════
+//  LIGHTNING ARCS
+// ══════════════════════════════════════════════════
+const arcs=[];
+function spawnArc(x1,y1,x2,y2,h,life=.9){
+  arcs.push({x1,y1,x2,y2,h,life,decay:.06+Math.random()*.05,
+    jit:Array.from({length:6},()=>({x:(Math.random()-.5)*80,y:(Math.random()-.5)*80}))});
+}
+function tickArcs(){for(let i=arcs.length-1;i>=0;i--){arcs[i].life-=arcs[i].decay;if(arcs[i].life<=0)arcs.splice(i,1);}}
+function drawArcs(){
+  for(const a of arcs){
+    cx.save();cx.globalAlpha=a.life*.65;cx.strokeStyle=hsl(a.h,100,78);cx.lineWidth=1.8;
+    cx.shadowColor=hsl(a.h,100,65);cx.shadowBlur=18;cx.beginPath();cx.moveTo(a.x1,a.y1);
+    for(const j of a.jit)cx.quadraticCurveTo((a.x1+a.x2)/2+j.x,(a.y1+a.y2)/2+j.y,a.x2,a.y2);
+    cx.stroke();cx.restore();
+  }
+}
+
+// ══════════════════════════════════════════════════
+//  LASERS
+// ══════════════════════════════════════════════════
+const lasers=[];
+function spawnLaser(){lasers.push({angle:Math.random()*Math.PI*2,life:1,decay:.05+Math.random()*.04,h:hue+Math.random()*80});}
+function tickLasers(){for(let i=lasers.length-1;i>=0;i--){lasers[i].life-=lasers[i].decay;if(lasers[i].life<=0)lasers.splice(i,1);}}
+function drawLasers(ox,oy){
+  for(const l of lasers){
+    const len=R*.9,x2=(CX+ox)+Math.cos(l.angle)*len,y2=(CY+oy)+Math.sin(l.angle)*len;
+    cx.save();cx.globalAlpha=l.life*.65;cx.strokeStyle=hsl(l.h,100,78);cx.lineWidth=1.5+l.life*3;
+    cx.shadowColor=hsl(l.h,100,70);cx.shadowBlur=20+l.life*30;
+    cx.beginPath();cx.moveTo(CX+ox,CY+oy);cx.lineTo(x2,y2);cx.stroke();cx.restore();
+  }
+}
+
+// ══════════════════════════════════════════════════
+//  GALAXY STARS
+// ══════════════════════════════════════════════════
+const STARS=650;
+const stars=Array.from({length:STARS},()=>{
+  const arm=Math.floor(Math.random()*3),dist=.04+Math.pow(Math.random(),.6)*.95;
+  return{dist,angle:arm*(Math.PI*2/3)+dist*Math.PI*3.5+(Math.random()-.5)*.45,arm,r:.3+Math.random()*1.8,phase:Math.random()*Math.PI*2};
+});
+
+// ══════════════════════════════════════════════════
+//  AURORA BOREALIS
+// ══════════════════════════════════════════════════
+const AURORA_BANDS=6;
+const auroraBands=Array.from({length:AURORA_BANDS},(_,i)=>({
+  yFrac: .05+i*.15,
+  dh: i*35,
+  speed: .4+i*.18,
+  amp1: 55+i*12,
+  amp2: 28+i*8,
+  phase: i*1.1,
+}));
+
+function drawAurora(px,py){
+  const pts=32;
+  for(const b of auroraBands){
+    const yBase=b.yFrac*H+py*P_AURORA;
+    const audioPush=vocalS*.35+mS*.20;
+    const alpha=0.04+audioPush*0.12+bS*.06;
+    if(alpha<.012)continue;
+
+    // Build wave path
+    bx.save();
+    bx.beginPath();
+    bx.moveTo(-10,H);
+
+    for(let xi=0;xi<=pts;xi++){
+      const xn=xi/pts;
+      const xPx=xn*W+px*P_AURORA*.5;
+      const y=yBase
+        +Math.sin(xn*4.5+nebulaT*b.speed+b.phase)*b.amp1*(1+audioPush)
+        +Math.sin(xn*9+nebulaT*(b.speed*.7)-b.phase*.5)*b.amp2*(1+bS*.5);
+      xi===0?bx.moveTo(xPx,y):bx.lineTo(xPx,y);
+    }
+    bx.lineTo(W+10,H);bx.lineTo(-10,H);bx.closePath();
+
+    const bandH=b.amp1*(2+audioPush*2);
+    const g=bx.createLinearGradient(0,yBase-bandH,0,yBase+bandH);
+    g.addColorStop(0,hsl(hue+b.dh,90,65,0));
+    g.addColorStop(.35,hsl(hue+b.dh,90,60,alpha*1.5));
+    g.addColorStop(.65,hsl(hue+b.dh+20,85,55,alpha));
+    g.addColorStop(1,hsl(hue+b.dh+40,80,40,0));
+    bx.fillStyle=g;bx.fill();bx.restore();
+  }
+}
+
+// ══════════════════════════════════════════════════
+//  BACKGROUND DRAW
+// ══════════════════════════════════════════════════
+const clouds=[
+  {fx:.15,fy:.22,r:.58,dh:0,  dx:1.1,dy:.7 },
+  {fx:.85,fy:.72,r:.52,dh:75, dx:-.9,dy:.65},
+  {fx:.5, fy:.5, r:.48,dh:145,dx:.6, dy:-1 },
+  {fx:.1, fy:.82,r:.40,dh:225,dx:1.2,dy:-.5},
+  {fx:.92,fy:.2, r:.38,dh:295,dx:-.6,dy:.9 },
+  {fx:.38,fy:.12,r:.32,dh:38, dx:.8, dy:.5 },
+  {fx:.72,fy:.88,r:.30,dh:195,dx:-.5,dy:-.8},
+];
+
+function drawBG(){
+  nebulaT+=.009;
+  bx.clearRect(0,0,W,H);
+  bx.fillStyle='#00000d';bx.fillRect(0,0,W,H);
+
+  // ── Nebula clouds with parallax ──
+  for(const c of clouds){
+    const ox=Math.sin(nebulaT*c.dx)*.04*W + mX*P_NEBULA;
+    const oy=Math.cos(nebulaT*c.dy)*.04*H + mY*P_NEBULA;
+    const cx2=c.fx*W+ox, cy2=c.fy*H+oy;
+    const reactSize=1+bS*.9+mS*.4+volS*.3;
+    const br=c.r*Math.min(W,H)*reactSize;
+    const ra=.16+volS*.44+bS*.22;
+    const g=bx.createRadialGradient(cx2,cy2,0,cx2,cy2,br);
+    g.addColorStop(0,  hsl(hue+c.dh,   92,36,ra));
+    g.addColorStop(.35,hsl(hue+c.dh+22,82,22,ra*.5));
+    g.addColorStop(.7, hsl(hue+c.dh+48,72,14,ra*.2));
+    g.addColorStop(1,  'rgba(0,0,0,0)');
+    bx.beginPath();bx.arc(cx2,cy2,br,0,Math.PI*2);bx.fillStyle=g;bx.fill();
+  }
+
+  // ── Aurora Borealis ──
+  drawAurora(mX,mY);
+
+  // ── Beat radial explosion ──
+  if(beat>.04){
+    const bR=Math.min(W,H)*(.14+beat*.88);
+    const eg=bx.createRadialGradient(CX,CY,0,CX,CY,bR);
+    eg.addColorStop(0,  hsl(hue,   100,80,beat*.48));
+    eg.addColorStop(.25,hsl(hue+30,100,60,beat*.22));
+    eg.addColorStop(.6, hsl(hue+60,90, 40,beat*.10));
+    eg.addColorStop(1,  'rgba(0,0,0,0)');
+    bx.fillStyle=eg;bx.fillRect(0,0,W,H);
+    for(const [cx3,cy3] of [[0,0],[W,0],[0,H],[W,H]]){
+      const cg=bx.createRadialGradient(cx3,cy3,0,cx3,cy3,Math.min(W,H)*.6);
+      cg.addColorStop(0,hsl(hue+90,100,65,beat*.13));cg.addColorStop(1,'rgba(0,0,0,0)');
+      bx.fillStyle=cg;bx.fillRect(0,0,W,H);
+    }
+  }
+
+  // ── Spiral stars with parallax ──
+  const maxR=R*.54,sSpeed=.028+bS*.06+volS*.04;
+  for(const s of stars){
+    const a=s.angle+gT*sSpeed*(1+s.dist*.6);
+    const sx=CX+Math.cos(a)*s.dist*maxR + mX*P_STARS*(s.dist+.3);
+    const sy=CY+Math.sin(a)*s.dist*maxR + mY*P_STARS*(s.dist+.3);
+    const twk=.35+.65*Math.sin(s.phase+gT*.9);
+    const boost=1+tS*1.8+bS*.8;
+    bx.save();bx.globalAlpha=Math.min(1,twk*boost*.65);
+    bx.beginPath();bx.arc(sx,sy,s.r*boost,0,Math.PI*2);
+    bx.fillStyle=hsl(hue+s.arm*55+s.dist*80,80,86);
+    bx.shadowColor=hsl(hue+s.arm*55,100,76);bx.shadowBlur=s.r*6+bS*8;
+    bx.fill();bx.restore();
+  }
+
+  // ── Mid-frequency energy scan lines ──
+  if(mS>.16){
+    const sa=mS*.11;
+    for(let y=0;y<H;y+=4){
+      const w=Math.sin(y*.05+nebulaT*3)*mS*.5;
+      bx.fillStyle=hsl(hue+w*80,90,60,sa*(0.5+w));
+      bx.fillRect(0,y,W,1.5);
+    }
+  }
+
+  // ── Vignette ──
+  const vg=bx.createRadialGradient(CX,CY,R*.28,CX,CY,Math.max(W,H)*.78);
+  vg.addColorStop(0,'rgba(0,0,0,0)');vg.addColorStop(1,'rgba(0,0,8,.7)');
+  bx.fillStyle=vg;bx.fillRect(0,0,W,H);
+}
+
+// ══════════════════════════════════════════════════
+//  OUTER DUAL SPECTRUM RING
+// ══════════════════════════════════════════════════
+function drawRings(bars,ox,oy){
+  const INNER=R*.38,OUTER=R*.72,INNER2=R*.35;
+  const pcx=CX+ox,pcy=CY+oy;
+  for(let i=0;i<N;i++){
+    const angle=(i/N)*Math.PI*2-Math.PI*.5;
+    const v=Math.max(.025,bars[i]);
+    const barH=v*(OUTER-INNER)*1.65;
+    const h=hue+(i/N)*200;
+    cx.save();
+    cx.strokeStyle=hsl(h,100,54+v*33,.62+v*.38);
+    cx.lineWidth=2.5+v*5.5;cx.lineCap='round';
+    cx.shadowColor=hsl(h,100,68);cx.shadowBlur=11+v*42;
+    cx.beginPath();cx.moveTo(pcx+Math.cos(angle)*INNER,pcy+Math.sin(angle)*INNER);
+    cx.lineTo(pcx+Math.cos(angle)*(INNER+barH),pcy+Math.sin(angle)*(INNER+barH));
+    cx.stroke();cx.restore();
+    if(v>.37){
+      const ex=pcx+Math.cos(angle)*(INNER+barH),ey=pcy+Math.sin(angle)*(INNER+barH);
+      cx.save();cx.beginPath();cx.arc(ex,ey,2+v*5,0,Math.PI*2);
+      cx.fillStyle=hsl(h,100,94,v);cx.shadowColor=hsl(h,100,82);cx.shadowBlur=22+v*28;cx.fill();cx.restore();
+    }
+  }
+  for(let i=0;i<N;i++){
+    const angle=(i/N)*Math.PI*2-Math.PI*.5;
+    const v=Math.max(.018,bars[i]);
+    const barH=v*INNER2*.52;
+    const h=hue+180+(i/N)*120;
+    cx.save();cx.strokeStyle=hsl(h,80,54+v*26,.33+v*.4);
+    cx.lineWidth=1.5+v*3;cx.lineCap='round';
+    cx.shadowColor=hsl(h,100,60);cx.shadowBlur=7+v*18;
+    cx.beginPath();cx.moveTo(pcx+Math.cos(angle)*INNER2,pcy+Math.sin(angle)*INNER2);
+    cx.lineTo(pcx+Math.cos(angle)*(INNER2-barH),pcy+Math.sin(angle)*(INNER2-barH));
+    cx.stroke();cx.restore();
+  }
+  cx.save();cx.beginPath();cx.arc(pcx,pcy,INNER,0,Math.PI*2);
+  cx.strokeStyle=hsl(hue,60,52,.14+bS*.24);cx.lineWidth=1;cx.stroke();
+  cx.beginPath();cx.arc(pcx,pcy,OUTER,0,Math.PI*2);
+  cx.strokeStyle=hsl(hue+80,60,52,.07+bS*.17);cx.lineWidth=1;cx.stroke();cx.restore();
+}
+
+// ══════════════════════════════════════════════════
+//  VOCAL RING
+// ══════════════════════════════════════════════════
+const vocalHist=new Float32Array(64).fill(0);let vhIdx=0;
+function drawVocalRing(bars,ox,oy){
+  const VBASE=R*.27,pcx=CX+ox,pcy=CY+oy;
+  vocalHist[vhIdx%64]=avg(bars,15,55);vhIdx++;
+  cx.save();cx.beginPath();
+  for(let i=0;i<=64;i++){
+    const a=(i/64)*Math.PI*2-Math.PI*.5;
+    const v=vocalHist[i%64],r=VBASE+v*VBASE*1.12;
+    const x=pcx+Math.cos(a)*r,y=pcy+Math.sin(a)*r;
+    i===0?cx.moveTo(x,y):cx.lineTo(x,y);
+  }
+  cx.closePath();
+  const g=cx.createLinearGradient(pcx-VBASE,pcy,pcx+VBASE,pcy);
+  g.addColorStop(0,hsl(hue+180,90,68,.45+vocalS*.55));
+  g.addColorStop(.5,hsl(hue+240,95,75,.65+vocalS*.35));
+  g.addColorStop(1,hsl(hue+300,90,68,.45+vocalS*.55));
+  cx.strokeStyle=g;cx.lineWidth=2+vocalS*3.5;
+  cx.shadowColor=hsl(hue+220,100,72,.9);cx.shadowBlur=16+vocalS*48;
+  cx.stroke();cx.restore();
+  if(vocalS>.28){
+    for(let ring=0;ring<3;ring++){
+      const rp=(gT*2+ring*1.2)%1;
+      cx.save();cx.globalAlpha=(1-rp)*vocalS*.38;
+      cx.beginPath();cx.arc(pcx,pcy,VBASE*(1+rp*.85),0,Math.PI*2);
+      cx.strokeStyle=hsl(hue+210,90,72);cx.lineWidth=2-rp;
+      cx.shadowColor=hsl(hue+210,100,72);cx.shadowBlur=22;cx.stroke();cx.restore();
+    }
+  }
+}
+
+// ══════════════════════════════════════════════════
+//  ENERGY TENDRILS — react to vocal+mid
+// ══════════════════════════════════════════════════
+const TDCOUNT=8;
+const tdrPhases=Array.from({length:TDCOUNT},()=>Math.random()*Math.PI*2);
+const tdrLens  =Array.from({length:TDCOUNT},()=>.38+Math.random()*.28);
+
+function drawTendrils(ox,oy){
+  const baseR=R*.16,maxLen=R*.62;
+  const pcx=CX+ox,pcy=CY+oy;
+  const act=vocalS*.55+mS*.35+bS*.1;
+  if(act<.04)return;
+
+  for(let t=0;t<TDCOUNT;t++){
+    const baseAngle=(t/TDCOUNT)*Math.PI*2+gT*.15;
+    const len=maxLen*(tdrLens[t]+act*.55);
+    const SEGS=14;
+    const h=hue+t*(360/TDCOUNT);
+
+    cx.save();cx.beginPath();
+    let px2=pcx+Math.cos(baseAngle)*baseR;
+    let py2=pcy+Math.sin(baseAngle)*baseR;
+    cx.moveTo(px2,py2);
+
+    for(let s=1;s<=SEGS;s++){
+      const tf=s/SEGS;
+      const r=baseR+len*tf;
+      // Wobble: decreases toward tip, faster with vocal
+      const wobble=Math.sin(gT*(1.8+t*.12)+tdrPhases[t]+s*.65)*(1-tf*.7)*(0.35+act*.45);
+      const perpAngle=baseAngle+Math.PI*.5;
+      const wX=Math.cos(perpAngle)*wobble*maxLen*.4;
+      const wY=Math.sin(perpAngle)*wobble*maxLen*.4;
+      const nx=pcx+Math.cos(baseAngle)*r+wX;
+      const ny=pcy+Math.sin(baseAngle)*r+wY;
+      cx.lineTo(nx,ny);px2=nx;py2=ny;
+    }
+
+    // Gradient along tendril: bright base → fade at tip
+    const tgx1=pcx+Math.cos(baseAngle)*baseR;
+    const tgy1=pcy+Math.sin(baseAngle)*baseR;
+    const tg=cx.createLinearGradient(tgx1,tgy1,px2,py2);
+    tg.addColorStop(0,  hsl(h,100,75,act*.85));
+    tg.addColorStop(.5, hsl(h+20,90,65,act*.55));
+    tg.addColorStop(1,  hsl(h+40,80,50,0));
+
+    cx.strokeStyle=tg;
+    cx.lineWidth=1.5+act*3;cx.lineCap='round';cx.lineJoin='round';
+    cx.shadowColor=hsl(h,100,70);cx.shadowBlur=10+act*25;
+    cx.stroke();cx.restore();
+
+    // Tendril tip glow
+    if(act>.25){
+      cx.save();cx.beginPath();cx.arc(px2,py2,2+act*4,0,Math.PI*2);
+      cx.fillStyle=hsl(h,100,88,act*.7);
+      cx.shadowColor=hsl(h,100,75);cx.shadowBlur=14+act*20;
+      cx.fill();cx.restore();
+    }
+  }
+}
+
+// ══════════════════════════════════════════════════
+//  CENTER CORE — 3D TEXTURED ALBUM SPHERE
+// ══════════════════════════════════════════════════
+function drawCore(ox,oy){
+  const base=R*.11,cR=base*(1+bS*.92+mS*.48);
+  const pcx=CX+ox,pcy=CY+oy;
+
+  // Outer glowing halos
+  for(let ring=6;ring>=0;ring--){
+    const rr=cR*(1+ring*.65+bS*ring*.26);
+    const g=cx.createRadialGradient(pcx,pcy,0,pcx,pcy,rr);
+    g.addColorStop(0,hsl(hue+ring*18,90,72,.12-ring*.014));g.addColorStop(1,'transparent');
+    cx.beginPath();cx.arc(pcx,pcy,rr,0,Math.PI*2);cx.fillStyle=g;cx.fill();
+  }
+
+  // 3D Outer Metallic / Neon Bevel Frame
+  const rimR=cR+3+bS*5;
+  cx.save();
+  cx.beginPath();cx.arc(pcx,pcy,rimR,0,Math.PI*2);
+  cx.strokeStyle=hsl(hue+30,100,75,.7+bS*.3);
+  cx.lineWidth=3+bS*4;
+  cx.shadowColor=hsl(hue,100,70);cx.shadowBlur=25+bS*40;
+  cx.stroke();
+
+  // Tech aperture notches on bevel ring
+  const notchCount=12, notchAngleOffset=gT*.4+mX*.2;
+  for(let i=0;i<notchCount;i++){
+    const na=notchAngleOffset+(i*Math.PI*2/notchCount);
+    const n1x=pcx+Math.cos(na)*(rimR-4), n1y=pcy+Math.sin(na)*(rimR-4);
+    const n2x=pcx+Math.cos(na)*(rimR+6+bS*6), n2y=pcy+Math.sin(na)*(rimR+6+bS*6);
+    cx.beginPath();cx.moveTo(n1x,n1y);cx.lineTo(n2x,n2y);
+    cx.strokeStyle=hsl(hue+i*15,100,85,.6+bS*.4);
+    cx.lineWidth=2;cx.stroke();
+  }
+  cx.restore();
+
+  // ── 3D ALBUM SPHERE PATTERN ──
+  const activeImg = loadedAlbumImg || demoAlbumArt;
+  if(activeImg){
+    cx.save();
+    cx.beginPath();cx.arc(pcx,pcy,cR,0,Math.PI*2);
+    cx.clip();
+
+    // 3D Rotation tilt transform
+    const rotAngle=Math.sin(gT*.5)*.15 + mX*.25;
+    cx.translate(pcx,pcy);
+    cx.rotate(rotAngle);
+
+    // Draw Album Cover
+    cx.drawImage(activeImg, -cR, -cR, cR*2, cR*2);
+
+    cx.rotate(-rotAngle);
+    cx.translate(-pcx,-pcy);
+
+    // 1. 3D Sphere Curvature Normal Shadow (Lens effect)
+    const sphereShade=cx.createRadialGradient(pcx,pcy,cR*.2,pcx,pcy,cR);
+    sphereShade.addColorStop(0,'rgba(0,0,0,0)');
+    sphereShade.addColorStop(.65,'rgba(0,0,20,0.3)');
+    sphereShade.addColorStop(1,'rgba(0,0,30,0.85)');
+    cx.fillStyle=sphereShade;
+    cx.fillRect(pcx-cR,pcy-cR,cR*2,cR*2);
+
+    // 2. 3D Tech Mesh / Sphere Wireframe Grid Overlay
+    cx.save();
+    cx.strokeStyle=hsl(hue+40,95,75,.28+bS*.35);
+    cx.lineWidth=1.2;
+    cx.shadowColor=hsl(hue,100,70);cx.shadowBlur=8;
+
+    for(let lat=-0.8;lat<=0.8;lat+=0.35){
+      const latY=pcy+lat*cR;
+      const latR=Math.sqrt(Math.max(0,cR*cR-(lat*cR)*(lat*cR)));
+      cx.beginPath();
+      cx.ellipse(pcx,latY,latR,latR*.35,rotAngle,0,Math.PI*2);
+      cx.stroke();
+    }
+    for(let lon=0;lon<Math.PI;lon+=Math.PI/4){
+      const lAngle=lon+gT*.4+mX*.3;
+      cx.beginPath();
+      cx.ellipse(pcx,pcy,cR*Math.abs(Math.cos(lAngle)),cR,lAngle,0,Math.PI*2);
+      cx.stroke();
+    }
+    cx.restore();
+
+    // 3D Glass Specular Glare Reflection
+    const specGrad=cx.createRadialGradient(pcx-cR*.35,pcy-cR*.35,0,pcx-cR*.1,pcy-cR*.1,cR*1.1);
+    specGrad.addColorStop(0,'rgba(255,255,255,0.65)');
+    specGrad.addColorStop(.3,'rgba(255,255,255,0.18)');
+    specGrad.addColorStop(.6,'rgba(255,255,255,0.02)');
+    specGrad.addColorStop(1,'rgba(0,0,0,0)');
+    cx.fillStyle=specGrad;
+    cx.fillRect(pcx-cR,pcy-cR,cR*2,cR*2);
+
+    cx.restore();
+  }
+
+  // Satellites orbiting around 3D core
+  for(let o=0;o<6;o++){
+    const spd=.44+o*.22+bS*.72+vocalS*.42;
+    const ang=gT*spd+(o*Math.PI*2/6);
+    const dist=cR*(2+o*.56);
+    const or=1.5+bS*5+o*.4;
+    cx.save();cx.beginPath();cx.arc(pcx+Math.cos(ang)*dist,pcy+Math.sin(ang)*dist,or,0,Math.PI*2);
+    cx.fillStyle=hsl(hue+o*35,100,82,.92);
+    cx.shadowColor=hsl(hue+o*35,100,72);cx.shadowBlur=14+bS*22;cx.fill();
+    cx.beginPath();cx.arc(pcx,pcy,dist,0,Math.PI*2);
+    cx.strokeStyle=hsl(hue+o*35,45,45,.05+bS*.07);cx.lineWidth=1;cx.stroke();cx.restore();
+  }
+}
+
+// ══════════════════════════════════════════════════
+//  SHOCKWAVE
+// ══════════════════════════════════════════════════
+function drawShockwave(ox,oy){
+  if(shockA<=.01)return;
+  cx.save();cx.globalAlpha=shockA*.56;
+  cx.strokeStyle=hsl(hue,100,78);cx.lineWidth=3+shockA*9;
+  cx.shadowColor=hsl(hue,100,72);cx.shadowBlur=28;
+  cx.beginPath();cx.arc(CX+ox,CY+oy,shockR,0,Math.PI*2);cx.stroke();cx.restore();
+}
+
+// ══════════════════════════════════════════════════
+//  EQ STRIP
+// ══════════════════════════════════════════════════
+function drawEQ(bars){
+  const bw=W/bars.length,maxH=H*.09,yb=H-4;
+  cx.save();
+  for(let i=0;i<bars.length;i++){
+    const v=Math.max(.012,bars[i]),bh=v*maxH,h=hue+(i/bars.length)*180;
+    const g=cx.createLinearGradient(0,yb-bh,0,yb);
+    g.addColorStop(0,hsl(h,100,72,.9));g.addColorStop(1,hsl(h,100,38,.2));
+    cx.fillStyle=g;cx.shadowColor=hsl(h,100,65);cx.shadowBlur=7;
+    cx.fillRect(i*bw+1,yb-bh,bw-2,bh);
+  }
+  cx.restore();
+}
+
+// ══════════════════════════════════════════════════
+//  TRACK FLASH
+// ══════════════════════════════════════════════════
+const flashEl=document.getElementById('flash');
+function doFlash(){flashEl.style.opacity='.8';setTimeout(()=>flashEl.style.opacity='0',120);}
+
+// ══════════════════════════════════════════════════
+//  MAIN LOOP
+// ══════════════════════════════════════════════════
+function frame(ts){
+  gT+=.016;demoT+=.016;
+
+  // Audio
+  const src=demoMode?getDemoAudio():raw;
+  const amp=new Float32Array(N);
+  for(let i=0;i<N;i++)amp[i]=Math.min(1,src[i]*BOOST);
+  for(let i=0;i<N;i++){sm[i]=lerp(sm[i],amp[i],.35);sm2[i]=lerp(sm2[i],amp[i],.12);}
+
+  bass  =avg(amp,0,10);mid=avg(amp,10,60);treble=avg(amp,60,128);
+  vocal =avg(amp,15,55);vol=avg(amp,0,128);
+  bS=lerp(bS,bass,.30);mS=lerp(mS,mid,.22);tS=lerp(tS,treble,.18);
+  vocalS=lerp(vocalS,vocal,.18);volS=lerp(volS,vol,.18);
+
+  // Hue
+  artHue=lerp(artHue,targetHue,.12);
+  hueTarget=artHue+volS*50+bS*30;
+  hue=lerp(hue,hueTarget,.10);
+
+  // Mouse parallax smoothing with momentum
+  const tX=(mRawX-.5)*2,tY=(mRawY-.5)*2;
+  mXvel=lerp(mXvel,(tX-mX)*.08,.1);mYvel=lerp(mYvel,(tY-mY)*.08,.1);
+  mX=lerp(mX,tX,.06);mY=lerp(mY,tY,.06);
+
+  // Parallax offsets per layer
+  const pRings={x:mX*P_RINGS+bS*mX*5,  y:mY*P_RINGS+bS*mY*5};
+  const pCore ={x:mX*P_CORE +bS*mX*8,  y:mY*P_CORE +bS*mY*8};
+
+  // Beat detection
+  const now=ts||0;
+  if(bass>.50&&lastBass<.50&&now-lastBeatT>80){
+    lastBeatT=now;beat=1;
+    const bx2=CX+pCore.x,by2=CY+pCore.y;
+    burst(bx2,by2,30+Math.floor(bass*38),9+bass*15,hue,5+bass*7,1,.015);
+    for(let b=0;b<5;b++){
+      const a=Math.random()*Math.PI*2,rr=R*.72;
+      burst(CX+Math.cos(a)*rr,CY+Math.sin(a)*rr,8,6+bass*9,hue+Math.random()*130,3,.9,.022);
+      spawnArc(bx2,by2,CX+Math.cos(a)*rr,CY+Math.sin(a)*rr,hue+Math.random()*80);
+    }
+    for(let l=0;l<Math.floor(1+bass*5);l++)spawnLaser();
+    shockR=R*.1;shockA=Math.min(1,bass*1.65);
+  }
+  beat=Math.max(0,beat-.05);lastBass=bass;
+  if(trackFlash>0){doFlash();trackFlash=0;}
+  shockR+=14+bS*22;shockA=Math.max(0,shockA-.038);
+
+  // ── DRAW ──
+  drawBG();
+
+  cx.clearRect(0,0,W,H);
+  drawShockwave(pRings.x,pRings.y);
+  drawLasers(pCore.x,pCore.y);tickLasers();
+  drawArcs();tickArcs();
+  drawTendrils(pCore.x,pCore.y);
+  drawRings(sm,pRings.x,pRings.y);
+  drawVocalRing(sm2,pRings.x,pRings.y);
+  drawCore(pCore.x,pCore.y);
+
+  for(let i=particles.length-1;i>=0;i--){
+    particles[i].tick();particles[i].draw();
+    if(particles[i].life<=0)particles.splice(i,1);
+  }
+  drawEQ(sm);
+
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

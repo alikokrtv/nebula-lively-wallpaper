@@ -1,0 +1,17 @@
+{
+  "AppVersion": "1.0.0.0",
+  "Title": "Nebula v3 — Living Album Art",
+  "Thumbnail": "preview.png",
+  "Preview": null,
+  "Desc": "Epic 3D audio-reactive nebula wallpaper with Spotify Now Playing, album art color matching, 3D sphere artwork projection, vocal beat pulse, and multi-layer mouse parallax.",
+  "Author": "User & Antigravity",
+  "License": "MIT",
+  "Contact": "",
+  "Type": 1,
+  "FileName": "index.html",
+  "Arguments": "--audio --system-nowplaying",
+  "IsAbsolutePath": false,
+  "Id": null,
+  "Tags": ["audio", "visualizer", "spotify", "nebula", "3d", "parallax", "now-playing"],
+  "Version": 0
+}
