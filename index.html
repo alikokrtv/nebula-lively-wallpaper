@@ -246,28 +246,87 @@ function lerp(a,b,t){return a+(b-a)*t;}
 function hsl(h,s,l,a=1){return`hsla(${((h%360)+360)%360},${s}%,${l}%,${a})`;}
 
 // ══════════════════════════════════════════════════
-//  PARTICLES
+//  DAZZLING SCI-FI PARTICLES (Stars, Shards & Hex Rings)
 // ══════════════════════════════════════════════════
 const PMAX=700,particles=[];
 class Pt{
-  constructor(x,y,vx,vy,r,h,life,decay){
-    this.x=x;this.y=y;this.vx=vx;this.vy=vy;this.r=r;this.h=h;this.life=life;this.decay=decay;this.drag=.92+Math.random()*.05;
+  constructor(x,y,vx,vy,r,h,life,decay,type='star'){
+    this.x=x;this.y=y;this.vx=vx;this.vy=vy;this.r=r;this.h=h;this.life=life;this.decay=decay;
+    this.type=type; // 'star', 'shard', 'ring'
+    this.rot=Math.random()*Math.PI*2;
+    this.rotSpd=(Math.random()-.5)*0.2;
+    this.drag=.91+Math.random()*.05;
   }
-  tick(){this.x+=this.vx;this.y+=this.vy;this.vx*=this.drag;this.vy*=this.drag;this.life-=this.decay;this.r*=.97;}
+  tick(){
+    this.x+=this.vx;this.y+=this.vy;
+    this.vx*=this.drag;this.vy*=this.drag;
+    this.rot+=this.rotSpd;
+    this.life-=this.decay;
+  }
   draw(){
     if(this.life<=0)return;
-    cx.save();cx.globalAlpha=Math.max(0,this.life)*.9;
-    cx.beginPath();cx.arc(this.x,this.y,Math.max(.4,this.r),0,Math.PI*2);
-    const g=cx.createRadialGradient(this.x,this.y,0,this.x,this.y,this.r*2.5);
-    g.addColorStop(0,hsl(this.h,100,95));g.addColorStop(1,hsl(this.h,80,40,0));
-    cx.fillStyle=g;cx.shadowColor=hsl(this.h,100,70);cx.shadowBlur=this.r*3;cx.fill();cx.restore();
+    cx.save();
+    const alpha=Math.max(0,this.life);
+    cx.globalAlpha=alpha*.95;
+    cx.shadowColor=hsl(this.h,100,75);
+    cx.shadowBlur=12+this.r*3;
+
+    if(this.type==='star'){
+      // 4-Point Neon Star Sparkle
+      cx.translate(this.x,this.y);
+      cx.rotate(this.rot);
+      cx.fillStyle=hsl(this.h,100,95);
+      cx.beginPath();
+      const sr=this.r*2.5, innerR=sr*0.22;
+      for(let i=0;i<8;i++){
+        const a=i*Math.PI/4;
+        const radius=(i%2===0)?sr:innerR;
+        const sx=Math.cos(a)*radius, sy=Math.sin(a)*radius;
+        i===0?cx.moveTo(sx,sy):cx.lineTo(sx,sy);
+      }
+      cx.closePath();cx.fill();
+    } else if(this.type==='shard'){
+      // Directional Energy Crystal Shard with Motion Trail
+      const speed=Math.hypot(this.vx,this.vy);
+      const angle=Math.atan2(this.vy,this.vx);
+      cx.translate(this.x,this.y);
+      cx.rotate(angle);
+      const len=this.r*3 + speed*4;
+      const wid=this.r*1.2;
+      const g=cx.createLinearGradient(-len,0,len,0);
+      g.addColorStop(0,'transparent');
+      g.addColorStop(0.5,hsl(this.h,100,92));
+      g.addColorStop(1,hsl(this.h,90,65,0));
+      cx.fillStyle=g;
+      cx.beginPath();
+      cx.moveTo(len,0);cx.lineTo(0,wid);cx.lineTo(-len,0);cx.lineTo(0,-wid);
+      cx.closePath();cx.fill();
+    } else if(this.type==='ring'){
+      // Expanding Hexagonal Energy Shockwave
+      cx.translate(this.x,this.y);
+      cx.rotate(this.rot);
+      cx.strokeStyle=hsl(this.h,100,80,alpha);
+      cx.lineWidth=2;
+      cx.beginPath();
+      const hexR=this.r*4*(1.5-alpha);
+      for(let i=0;i<6;i++){
+        const a=i*Math.PI/3;
+        const hx=Math.cos(a)*hexR, hy=Math.sin(a)*hexR;
+        i===0?cx.moveTo(hx,hy):cx.lineTo(hx,hy);
+      }
+      cx.closePath();cx.stroke();
+    }
+    cx.restore();
   }
 }
+
 function burst(x,y,n,sp,h,r=3,life=1,decay=.018){
+  const types=['star','shard','ring','star'];
   for(let i=0;i<n;i++){
     if(particles.length>=PMAX)break;
-    const a=Math.random()*Math.PI*2,s=(.4+Math.random())*sp;
-    particles.push(new Pt(x,y,Math.cos(a)*s,Math.sin(a)*s,r+Math.random()*r,h+Math.random()*50-25,life,decay+Math.random()*.012));
+    const a=Math.random()*Math.PI*2,s=(.5+Math.random()*1.2)*sp;
+    const type=types[Math.floor(Math.random()*types.length)];
+    particles.push(new Pt(x,y,Math.cos(a)*s,Math.sin(a)*s,r+Math.random()*r,h+Math.random()*60-30,life,decay+Math.random()*.012,type));
   }
 }
 
